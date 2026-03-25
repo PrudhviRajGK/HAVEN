@@ -367,3 +367,153 @@ export const getIncomeCalendar = async (req, res) => {
     res.status(500).json({ error: 'Server error while fetching calendar' });
   }
 };
+
+// F-08 — GET /api/workers/badges
+export const getBadges = async (req, res) => {
+  const worker_id = req.worker.worker_id;
+
+  try {
+    // Get worker
+    const workerResult = await query(
+      'SELECT * FROM workers WHERE worker_id = $1',
+      [worker_id]
+    );
+
+    if (workerResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Worker not found' });
+    }
+
+    const worker = workerResult.rows[0];
+
+    // Get streak info
+    const streakResult = await query(
+      'SELECT * FROM policy_streaks WHERE worker_id = $1',
+      [worker_id]
+    );
+
+    const streak = streakResult.rows[0] || {
+      current_streak: 0,
+      total_weeks_covered: 0,
+    };
+
+    // Get claims stats
+    const claimsResult = await query(
+      `SELECT
+        COUNT(*) AS total_claims,
+        COUNT(*) FILTER (WHERE status = 'PAID') AS paid_claims,
+        COUNT(*) FILTER (WHERE status = 'FLAGGED') AS flagged_claims,
+        COALESCE(SUM(claim_amount) FILTER (WHERE status = 'PAID'), 0) AS total_paid
+       FROM claims WHERE worker_id = $1`,
+      [worker_id]
+    );
+
+    const claims = claimsResult.rows[0];
+    const totalWeeks = streak.total_weeks_covered;
+    const paidClaims = parseInt(claims.paid_claims);
+    const flaggedClaims = parseInt(claims.flagged_claims);
+
+    // Calculate GigScore (1.0 - 5.0)
+    const risk = worker.risk_score;
+    const gigScore = parseFloat(
+      Math.max(1.0, Math.min(5.0, 5.0 - (risk / 100) * 4)).toFixed(1)
+    );
+
+    // Determine badge level
+    let badge = null;
+    let nextBadge = null;
+
+    if (totalWeeks >= 12 || paidClaims >= 3) {
+      badge = {
+        level: 3,
+        name: 'ShieldMaster',
+        emoji: '🛡️',
+        benefit: 'Permanent 10% premium reduction',
+        unlocked: true,
+      };
+      nextBadge = null;
+    } else if (totalWeeks >= 8 || paidClaims >= 2) {
+      badge = {
+        level: 2,
+        name: 'Guardian',
+        emoji: '⚔️',
+        benefit: 'One free premium week per quarter',
+        unlocked: true,
+      };
+      nextBadge = {
+        level: 3,
+        name: 'ShieldMaster',
+        emoji: '🛡️',
+        requirement: `${Math.max(0, 12 - totalWeeks)} more weeks of coverage OR ${Math.max(0, 3 - paidClaims)} more paid claims`,
+      };
+    } else if (totalWeeks >= 4 || paidClaims >= 1) {
+      badge = {
+        level: 1,
+        name: 'Protector',
+        emoji: '🔰',
+        benefit: 'Priority customer support',
+        unlocked: true,
+      };
+      nextBadge = {
+        level: 2,
+        name: 'Guardian',
+        emoji: '⚔️',
+        requirement: `${Math.max(0, 8 - totalWeeks)} more weeks of coverage OR ${Math.max(0, 2 - paidClaims)} more paid claims`,
+      };
+    } else {
+      badge = null;
+      nextBadge = {
+        level: 1,
+        name: 'Protector',
+        emoji: '🔰',
+        requirement: `${Math.max(0, 4 - totalWeeks)} more weeks of coverage OR 1 paid claim`,
+      };
+    }
+
+    res.json({
+      worker: {
+        name: worker.full_name,
+        platform: worker.platform,
+        city: worker.city,
+        gig_score: gigScore,
+        risk_score: worker.risk_score,
+        kyc_verified: worker.kyc_verified,
+      },
+      current_badge: badge,
+      next_badge: nextBadge,
+      stats: {
+        total_weeks_covered: totalWeeks,
+        current_streak: streak.current_streak,
+        total_claims: parseInt(claims.total_claims),
+        paid_claims: paidClaims,
+        flagged_claims: flaggedClaims,
+        total_income_protected: `₹${parseFloat(claims.total_paid).toFixed(2)}`,
+      },
+      all_badges: [
+        {
+          level: 1,
+          name: 'Protector',
+          emoji: '🔰',
+          benefit: 'Priority customer support',
+          unlocked: totalWeeks >= 4 || paidClaims >= 1,
+        },
+        {
+          level: 2,
+          name: 'Guardian',
+          emoji: '⚔️',
+          benefit: 'One free premium week per quarter',
+          unlocked: totalWeeks >= 8 || paidClaims >= 2,
+        },
+        {
+          level: 3,
+          name: 'ShieldMaster',
+          emoji: '🛡️',
+          benefit: 'Permanent 10% premium reduction',
+          unlocked: totalWeeks >= 12 || paidClaims >= 3,
+        },
+      ],
+    });
+  } catch (err) {
+    console.error('Badges error:', err.message);
+    res.status(500).json({ error: 'Server error while fetching badges' });
+  }
+};

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  getBadges,
   getDashboard,
   getIncomeCalendar,
   getProfile,
@@ -22,5 +23,8 @@ router.get('/dashboard', getDashboard);
 
 // F-06 — Income Calendar
 router.get('/calendar', getIncomeCalendar);
+
+// F-08 — Dignity Score / Badges
+router.get('/badges', getBadges);
 
 export default router;
