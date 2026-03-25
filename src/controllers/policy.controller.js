@@ -190,3 +190,150 @@ export const getPolicyById = async (req, res) => {
     res.status(500).json({ error: 'Server error while fetching policy' });
   }
 };
+
+// F-01 — POST /api/policies/hourly/activate
+export const activateHourlyCoverage = async (req, res) => {
+  const worker_id = req.worker.worker_id;
+  const { hourly_rate } = req.body;
+
+  try {
+    const policyResult = await query(
+      `SELECT * FROM policies
+       WHERE worker_id = $1
+       AND status = 'ACTIVE'
+       AND week_start_date <= CURRENT_DATE
+       AND week_end_date >= CURRENT_DATE`,
+      [worker_id]
+    );
+
+    if (policyResult.rows.length === 0) {
+      return res.status(404).json({
+        error: 'No active policy found. Purchase a policy first.',
+      });
+    }
+
+    const policy = policyResult.rows[0];
+
+    const existingSession = await query(
+      `SELECT * FROM active_hours
+       WHERE worker_id = $1 AND status = 'ACTIVE'`,
+      [worker_id]
+    );
+
+    if (existingSession.rows.length > 0) {
+      return res.status(409).json({
+        error: 'You already have an active coverage session',
+        session: existingSession.rows[0],
+      });
+    }
+
+    const result = await query(
+      `INSERT INTO active_hours (worker_id, policy_id, hourly_rate)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [worker_id, policy.policy_id, hourly_rate || 5.0]
+    );
+
+    res.status(201).json({
+      message: '✅ Hourly coverage activated',
+      session: result.rows[0],
+      note: `You are covered at ₹${hourly_rate || 5}/hour. Tap deactivate when you go offline.`,
+    });
+  } catch (err) {
+    console.error('Activate hourly error:', err.message);
+    res.status(500).json({ error: 'Server error while activating coverage' });
+  }
+};
+
+// F-01 — PATCH /api/policies/hourly/deactivate
+export const deactivateHourlyCoverage = async (req, res) => {
+  const worker_id = req.worker.worker_id;
+
+  try {
+    const sessionResult = await query(
+      `SELECT * FROM active_hours
+       WHERE worker_id = $1 AND status = 'ACTIVE'`,
+      [worker_id]
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ error: 'No active coverage session found' });
+    }
+
+    const session = sessionResult.rows[0];
+    const startedAt = new Date(session.started_at);
+    const endedAt = new Date();
+    const durationMinutes = Math.round((endedAt - startedAt) / 60000);
+    const premiumCharged = (
+      (durationMinutes / 60) *
+      parseFloat(session.hourly_rate)
+    ).toFixed(2);
+
+    const result = await query(
+      `UPDATE active_hours
+       SET status = 'ENDED',
+           ended_at = NOW(),
+           duration_minutes = $1,
+           premium_charged = $2
+       WHERE session_id = $3
+       RETURNING *`,
+      [durationMinutes, premiumCharged, session.session_id]
+    );
+
+    res.json({
+      message: '✅ Coverage session ended',
+      session: result.rows[0],
+      summary: {
+        duration: `${durationMinutes} minutes`,
+        premium_charged: `₹${premiumCharged}`,
+        started_at: session.started_at,
+        ended_at: endedAt,
+      },
+    });
+  } catch (err) {
+    console.error('Deactivate hourly error:', err.message);
+    res.status(500).json({ error: 'Server error while deactivating coverage' });
+  }
+};
+
+// F-07 — PATCH /api/policies/:id/pause
+export const pausePolicy = async (req, res) => {
+  const { id } = req.params;
+  const worker_id = req.worker.worker_id;
+  const { reason } = req.body;
+
+  try {
+    const policyResult = await query(
+      `SELECT * FROM policies WHERE policy_id = $1 AND worker_id = $2`,
+      [id, worker_id]
+    );
+
+    if (policyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Policy not found' });
+    }
+
+    if (policyResult.rows[0].status !== 'ACTIVE') {
+      return res.status(400).json({
+        error: `Policy is already ${policyResult.rows[0].status}`,
+      });
+    }
+
+    const result = await query(
+      `UPDATE policies SET status = 'CANCELLED'
+       WHERE policy_id = $1 RETURNING *`,
+      [id]
+    );
+
+    res.json({
+      message: '⏸️ Policy paused successfully',
+      policy: result.rows[0],
+      reason: reason || 'Worker inactive — Smart Pause triggered',
+      note: 'No premium charged for inactive weeks. Reply RESUME to restart.',
+    });
+  } catch (err) {
+    console.error('Pause policy error:', err.message);
+    res.status(500).json({ error: 'Server error while pausing policy' });
+  }
+};

@@ -1,23 +1,27 @@
 import { Router } from 'express';
 import {
+  activateHourlyCoverage,
+  deactivateHourlyCoverage,
   getMyPolicies,
   getPolicyById,
+  pausePolicy,
   purchasePolicy,
 } from '../controllers/policy.controller.js';
 import { protect } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
-// All policy routes are protected — must be logged in
 router.use(protect);
 
-// POST /api/policies — buy a policy
 router.post('/', purchasePolicy);
-
-// GET /api/policies/my — get all my policies
 router.get('/my', getMyPolicies);
-
-// GET /api/policies/:id — get single policy
 router.get('/:id', getPolicyById);
+
+// F-01 — Hourly coverage
+router.post('/hourly/activate', activateHourlyCoverage);
+router.patch('/hourly/deactivate', deactivateHourlyCoverage);
+
+// F-07 — Smart Pause
+router.patch('/:id/pause', pausePolicy);
 
 export default router;
