@@ -186,3 +186,184 @@ export const getDashboard = async (req, res) => {
     res.status(500).json({ error: 'Server error while fetching dashboard' });
   }
 };
+
+// F-06 — GET /api/workers/calendar
+export const getIncomeCalendar = async (req, res) => {
+  const worker_id = req.worker.worker_id;
+  const { month, year } = req.query;
+
+  // Default to current month/year
+  const targetMonth = parseInt(month) || new Date().getMonth() + 1;
+  const targetYear = parseInt(year) || new Date().getFullYear();
+
+  try {
+    const worker = await query(
+      'SELECT avg_daily_earning, city, zone_id FROM workers WHERE worker_id = $1',
+      [worker_id]
+    );
+
+    if (worker.rows.length === 0) {
+      return res.status(404).json({ error: 'Worker not found' });
+    }
+
+    const { avg_daily_earning, zone_id } = worker.rows[0];
+
+    // Get all claims for this month with their event dates
+    const claimsResult = await query(
+      `SELECT 
+        c.claim_id,
+        c.claim_amount,
+        c.status,
+        c.payout_at,
+        c.created_at,
+        de.event_type,
+        de.event_timestamp,
+        de.severity
+       FROM claims c
+       LEFT JOIN disruption_events de ON c.event_id = de.event_id
+       WHERE c.worker_id = $1
+       AND EXTRACT(MONTH FROM c.created_at) = $2
+       AND EXTRACT(YEAR FROM c.created_at) = $3`,
+      [worker_id, targetMonth, targetYear]
+    );
+
+    // Get all active_hours sessions for this month
+    const hoursResult = await query(
+      `SELECT 
+        DATE(started_at) as work_date,
+        SUM(duration_minutes) as total_minutes,
+        SUM(premium_charged) as total_premium
+       FROM active_hours
+       WHERE worker_id = $1
+       AND status = 'ENDED'
+       AND EXTRACT(MONTH FROM started_at) = $2
+       AND EXTRACT(YEAR FROM started_at) = $3
+       GROUP BY DATE(started_at)`,
+      [worker_id, targetMonth, targetYear]
+    );
+
+    // Get disruption events in worker's zone this month
+    const disruptionsResult = await query(
+      `SELECT 
+        DATE(event_timestamp) as disruption_date,
+        event_type,
+        severity,
+        city
+       FROM disruption_events
+       WHERE zone_id = $1
+       AND EXTRACT(MONTH FROM event_timestamp) = $2
+       AND EXTRACT(YEAR FROM event_timestamp) = $3`,
+      [zone_id, targetMonth, targetYear]
+    );
+
+    // Build calendar
+    const daysInMonth = new Date(targetYear, targetMonth, 0).getDate();
+    const calendar = [];
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(Date.UTC(targetYear, targetMonth - 1, day));
+      const dateStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+      const isFuture = date > new Date();
+
+      // Find work session for this day
+      const workSession = hoursResult.rows.find((r) => r.work_date === dateStr);
+
+      // Find disruption for this day
+      const disruption = disruptionsResult.rows.find(
+        (r) => r.disruption_date === dateStr
+      );
+
+      // Find claim for this day
+      const claim = claimsResult.rows.find((r) => {
+        const claimDate = new Date(r.created_at).toISOString().split('T')[0];
+        return claimDate === dateStr;
+      });
+
+      // Determine day status
+      let status = 'NO_DATA';
+      let earned = 0;
+      let color = 'grey';
+
+      if (isFuture) {
+        status = 'FUTURE';
+        color = 'grey';
+      } else if (isWeekend) {
+        status = 'WEEKEND';
+        color = 'grey';
+      } else if (claim && claim.status === 'PAID') {
+        status = 'PAYOUT_RECEIVED';
+        color = 'gold';
+        earned = parseFloat(claim.claim_amount);
+      } else if (disruption) {
+        status = 'DISRUPTION';
+        color = 'red';
+        earned = 0;
+      } else if (workSession) {
+        status = 'WORKED';
+        color = 'green';
+        earned = parseFloat(avg_daily_earning);
+      }
+
+      calendar.push({
+        date: dateStr,
+        day,
+        status,
+        color,
+        earned: `₹${earned}`,
+        disruption: disruption
+          ? {
+              type: disruption.event_type,
+              severity: disruption.severity,
+            }
+          : null,
+        claim: claim
+          ? {
+              claim_id: claim.claim_id,
+              amount: `₹${claim.claim_amount}`,
+              status: claim.status,
+            }
+          : null,
+        work_session: workSession
+          ? {
+              hours: (workSession.total_minutes / 60).toFixed(1),
+              premium: `₹${parseFloat(workSession.total_premium).toFixed(2)}`,
+            }
+          : null,
+      });
+    }
+
+    // Summary stats
+    const greenDays = calendar.filter((d) => d.status === 'WORKED').length;
+    const redDays = calendar.filter((d) => d.status === 'DISRUPTION').length;
+    const goldDays = calendar.filter(
+      (d) => d.status === 'PAYOUT_RECEIVED'
+    ).length;
+    const totalEarned = calendar.reduce(
+      (sum, d) => sum + parseFloat(d.earned.replace('₹', '')),
+      0
+    );
+
+    res.json({
+      month: targetMonth,
+      year: targetYear,
+      calendar,
+      summary: {
+        green_days: greenDays,
+        red_days: redDays,
+        gold_days: goldDays,
+        total_earned: `₹${totalEarned.toFixed(2)}`,
+        legend: {
+          green: 'Worked — earned normally',
+          red: 'Disruption — could not work',
+          gold: 'Disruption — payout received',
+          grey: 'Weekend or no data',
+        },
+      },
+    });
+  } catch (err) {
+    console.error('Income calendar error:', err.message);
+    res.status(500).json({ error: 'Server error while fetching calendar' });
+  }
+};

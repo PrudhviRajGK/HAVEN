@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   getDashboard,
+  getIncomeCalendar,
   getProfile,
   updateProfile,
 } from '../controllers/worker.controller.js';
@@ -18,5 +19,8 @@ router.patch('/profile', updateProfile);
 
 // GET /api/workers/dashboard
 router.get('/dashboard', getDashboard);
+
+// F-06 — Income Calendar
+router.get('/calendar', getIncomeCalendar);
 
 export default router;
