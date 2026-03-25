@@ -16,6 +16,63 @@ const COVERAGE_TIERS = {
   },
 };
 
+// F-02 — Streak reward helper
+const updateStreak = async (worker_id, week_start_date) => {
+  // Get existing streak record
+  const streakResult = await query(
+    'SELECT * FROM policy_streaks WHERE worker_id = $1',
+    [worker_id]
+  );
+
+  let streak;
+  let reward = null;
+
+  if (streakResult.rows.length === 0) {
+    // First ever policy — create streak record
+    const newStreak = await query(
+      `INSERT INTO policy_streaks 
+        (worker_id, current_streak, longest_streak, last_policy_week, total_weeks_covered)
+       VALUES ($1, 1, 1, $2, 1)
+       RETURNING *`,
+      [worker_id, week_start_date]
+    );
+    streak = newStreak.rows[0];
+  } else {
+    streak = streakResult.rows[0];
+    const lastWeek = new Date(streak.last_policy_week);
+    const thisWeek = new Date(week_start_date);
+    const diffDays = Math.round((thisWeek - lastWeek) / (1000 * 60 * 60 * 24));
+
+    // Consecutive week = 7 days apart
+    const isConsecutive = diffDays === 7;
+    const newStreak = isConsecutive ? streak.current_streak + 1 : 1;
+    const longestStreak = Math.max(newStreak, streak.longest_streak);
+    const totalWeeks = streak.total_weeks_covered + 1;
+
+    // Determine reward
+    if (newStreak === 4) reward = '+10% payout on next claim';
+    else if (newStreak === 8) reward = 'Coverage ceiling raised by ₹500';
+    else if (newStreak === 12) reward = 'Premium locked for 3 months';
+    else if (newStreak === 24) reward = 'Standard tier at Basic pricing';
+
+    const updated = await query(
+      `UPDATE policy_streaks
+       SET current_streak = $1,
+           longest_streak = $2,
+           last_policy_week = $3,
+           total_weeks_covered = $4,
+           reward_unlocked = $5,
+           updated_at = NOW()
+       WHERE worker_id = $6
+       RETURNING *`,
+      [newStreak, longestStreak, week_start_date, totalWeeks, reward, worker_id]
+    );
+    streak = updated.rows[0];
+  }
+
+  return { streak, reward };
+};
+
 // Helper — get week start and end dates (Monday to Sunday)
 const getWeekDates = () => {
   const now = new Date();
@@ -127,6 +184,9 @@ export const purchasePolicy = async (req, res) => {
 
     const policy = result.rows[0];
 
+    // F-02 — Update streak
+    const { streak, reward } = await updateStreak(worker_id, week_start_date);
+
     res.status(201).json({
       message: 'Policy purchased successfully',
       policy,
@@ -138,6 +198,14 @@ export const purchasePolicy = async (req, res) => {
         valid_from: week_start_date,
         valid_until: week_end_date,
         covers: disruption_types.join(', '),
+      },
+      streak: {
+        current_streak: streak.current_streak,
+        total_weeks_covered: streak.total_weeks_covered,
+        reward_unlocked: reward || null,
+        message: reward
+          ? `🎉 Streak reward unlocked: ${reward}`
+          : `🔥 ${streak.current_streak} week streak — keep it going!`,
       },
     });
   } catch (err) {
