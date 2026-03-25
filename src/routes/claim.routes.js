@@ -5,6 +5,7 @@ import {
   getClaimById,
   getMyClaims,
   payClaim,
+  quickClaim,
 } from '../controllers/claim.controller.js';
 import { protect } from '../middleware/auth.middleware.js';
 
@@ -26,5 +27,8 @@ router.patch('/:id/pay', payClaim);
 
 // PATCH /api/claims/:id/flag — flag a claim for fraud review
 router.patch('/:id/flag', flagClaim);
+
+// F-10 — Quick Claim
+router.post('/quick', quickClaim);
 
 export default router;
