@@ -13,6 +13,7 @@ import authRoutes from './routes/auth.routes.js';
 import claimRoutes from './routes/claim.routes.js';
 import disruptionRoutes from './routes/disruption.routes.js';
 import policyRoutes from './routes/policy.routes.js';
+import sosRoutes from './routes/sos.routes.js';
 import workerRoutes from './routes/worker.routes.js';
 
 // Initialize pool AFTER dotenv has loaded
@@ -36,6 +37,7 @@ app.use('/api/policies', policyRoutes);
 app.use('/api/disruptions', disruptionRoutes);
 app.use('/api/claims', claimRoutes);
 app.use('/api/workers', workerRoutes);
+app.use('/api/sos', sosRoutes);
 
 // Health check route
 app.get('/', (req, res) => {
